@@ -8,6 +8,7 @@ PKG_VER="$(tr -d ' \t\r\n' < "${SCRIPT_DIR}/VERSION")"
 DT_NAME="hackberrypicm5"
 
 CONFIG_TXT="/boot/firmware/config.txt"
+OVERLAY_DIR="/boot/firmware/current/overlays"
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 
@@ -63,7 +64,7 @@ dt_name = sys.argv[2]
 
 lines = config.read_text().splitlines()
 
-project_cm5_entries = {
+project_entries = {
     "dtoverlay=dwc2,dr_mode=host",
     "dtoverlay=vc4-kms-v3d",
     "dtoverlay=vc4-kms-dpi-hyperpixel4sq",
@@ -85,9 +86,9 @@ for line in lines:
 lines = restored
 
 # Remove project-specific entries globally
-lines = [line for line in lines if line.strip() not in project_cm5_entries]
+lines = [line for line in lines if line.strip() not in project_entries]
 
-# Remove [cm5] section if it became empty
+# Remove empty [cm5] section
 cm5_idx = None
 for i, line in enumerate(lines):
     if line.strip() == "[cm5]":
@@ -106,7 +107,7 @@ if cm5_idx is not None:
     if not any(line.strip() for line in block):
         lines = lines[:cm5_idx] + lines[end_idx:]
 
-# Compact excessive blank lines
+# Compact repeated blank lines
 compacted = []
 previous_blank = False
 for line in lines:
@@ -128,9 +129,7 @@ remove_overlay_files() {
   local removed=0
   local p
 
-  for p in \
-    "/boot/firmware/overlays/${DT_NAME}.dtbo" \
-    "/boot/firmware/current/overlays/${DT_NAME}.dtbo"
+  for p in "${OVERLAY_DIR}/${DT_NAME}.dtbo"
   do
     if [[ -e "${p}" ]]; then
       exec_cmd rm -f "${p}" || true
@@ -222,8 +221,7 @@ print_status() {
     log "  ${line}"
   done || true
 
-  log "Overlay in /boot/firmware/overlays: $(test -f "/boot/firmware/overlays/${DT_NAME}.dtbo" && echo yes || echo no)"
-  log "Overlay in /boot/firmware/current/overlays: $(test -f "/boot/firmware/current/overlays/${DT_NAME}.dtbo" && echo yes || echo no)"
+  log "Overlay in ${OVERLAY_DIR}: $(test -f "${OVERLAY_DIR}/${DT_NAME}.dtbo" && echo yes || echo no)"
   log "Overlay enabled in config.txt: $(test -f "${CONFIG_TXT}" && grep -qx "dtoverlay=${DT_NAME}" "${CONFIG_TXT}" && echo yes || echo no)"
 }
 
@@ -231,91 +229,6 @@ main() {
   need_root
 
   remove_config_txt_setup
-  remove_overlay_files
-  remove_dkms_versions
-  remove_sources_all_versions
-  refresh_module_deps
-  print_status
-
-  echo
-  log "[✓] Uninstall complete. Reboot recommended: sudo reboot"
-}
-
-main "$@"    log "No overlay file found for ${DT_NAME}"
-  fi
-}
-
-remove_dkms_versions() {
-  section "Remove DKMS module (all installed versions)"
-
-  local found=0
-  local line
-  local version
-
-  while IFS= read -r line; do
-    [[ -n "${line}" ]] || continue
-    found=1
-
-    version="$(sed -n 's/^'"${PKG_NAME}"', \([^,]*\),.*$/\1/p' <<< "${line}")"
-
-    if [[ -n "${version}" ]]; then
-      log "Removing DKMS entry: ${PKG_NAME}/${version}"
-      exec_cmd dkms remove -m "${PKG_NAME}" -v "${version}" --all || true
-    else
-      warn "Could not parse DKMS version from: ${line}"
-    fi
-  done < <(dkms status 2>/dev/null | grep -E "^${PKG_NAME}," || true)
-
-  if [[ "${found}" -eq 0 ]]; then
-    log "No DKMS entry found for ${PKG_NAME}"
-  fi
-}
-
-remove_sources_all_versions() {
-  section "Remove DKMS sources (/usr/src)"
-
-  shopt -s nullglob
-  local paths=(/usr/src/"${PKG_NAME}"-*)
-  shopt -u nullglob
-
-  if [[ ${#paths[@]} -eq 0 ]]; then
-    log "No /usr/src/${PKG_NAME}-* trees found"
-    return 0
-  fi
-
-  local p
-  for p in "${paths[@]}"; do
-    exec_cmd rm -rf "${p}" || true
-  done
-}
-
-refresh_module_deps() {
-  section "Refresh module dependency map"
-
-  if command -v depmod >/dev/null 2>&1; then
-    exec_cmd depmod -a || true
-  else
-    warn "depmod not found (skipping)"
-  fi
-}
-
-print_status() {
-  section "Status"
-
-  log "DKMS status (matching package name):"
-  dkms status 2>/dev/null | grep -F "${PKG_NAME}" | while IFS= read -r line; do
-    log "  ${line}"
-  done || true
-
-  log "Overlay in /boot/firmware/overlays: $(test -f "/boot/firmware/overlays/${DT_NAME}.dtbo" && echo yes || echo no)"
-  log "Overlay in /boot/firmware/current/overlays: $(test -f "/boot/firmware/current/overlays/${DT_NAME}.dtbo" && echo yes || echo no)"
-  log "Overlay enabled: $(test -f "${CONFIG_TXT}" && grep -qx "dtoverlay=${DT_NAME}" "${CONFIG_TXT}" && echo yes || echo no)"
-}
-
-main() {
-  need_root
-
-  remove_overlay_config
   remove_overlay_files
   remove_dkms_versions
   remove_sources_all_versions

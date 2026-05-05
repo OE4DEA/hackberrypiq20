@@ -74,7 +74,7 @@ check_prereqs() {
 
   resolve_overlay_dir
 
-  for cmd in dkms make dtc rsync install sed grep uname depmod; do
+  for cmd in dkms make dtc rsync install sed grep uname depmod python3; do
     command -v "${cmd}" >/dev/null 2>&1 || die "Missing dependency: ${cmd}"
   done
 
@@ -105,6 +105,23 @@ remove_dkms_versions() {
 
   if [[ "${found}" -eq 0 ]]; then
     log "No existing DKMS entries for ${PKG_NAME}"
+  fi
+
+  if [[ -d "/var/lib/dkms/${PKG_NAME}" ]]; then
+    section "Remove stale DKMS tree entries from /var/lib/dkms"
+
+    shopt -s nullglob
+    local trees=(/var/lib/dkms/"${PKG_NAME}"/*)
+    shopt -u nullglob
+
+    if [[ ${#trees[@]} -gt 0 ]]; then
+      local t
+      for t in "${trees[@]}"; do
+        exec_cmd rm -rf "${t}" || true
+      done
+    fi
+
+    rmdir "/var/lib/dkms/${PKG_NAME}" 2>/dev/null || true
   fi
 }
 
@@ -142,6 +159,11 @@ sync_sources() {
 dkms_install() {
   section "DKMS add / build / install"
 
+  if [[ -d "/var/lib/dkms/${PKG_NAME}/${PKG_VER}" ]]; then
+    warn "Removing stale DKMS tree /var/lib/dkms/${PKG_NAME}/${PKG_VER}"
+    exec_cmd rm -rf "/var/lib/dkms/${PKG_NAME}/${PKG_VER}" || true
+  fi
+
   must_exec dkms add     -m "${PKG_NAME}" -v "${PKG_VER}"
   must_exec dkms build   -m "${PKG_NAME}" -v "${PKG_VER}"
   must_exec dkms install -m "${PKG_NAME}" -v "${PKG_VER}"
@@ -163,14 +185,95 @@ install_overlay() {
 
   rm -f "${dtbo_tmp}"
 
-  if grep -qx "dtoverlay=${DT_NAME}" "${CONFIG_TXT}"; then
-    log "Overlay already enabled in config.txt"
-  else
-    echo "dtoverlay=${DT_NAME}" >> "${CONFIG_TXT}"
-    log "Overlay enabled in config.txt"
-  fi
-
   log "Overlay installed to ${OVERLAY_DIR}/${DT_NAME}.dtbo"
+}
+
+configure_config_txt() {
+  section "Adjust ${CONFIG_TXT}"
+
+  python3 - "${CONFIG_TXT}" "${DT_NAME}" <<'PY'
+from pathlib import Path
+import sys
+
+config = Path(sys.argv[1])
+dt_name = sys.argv[2]
+
+lines = config.read_text().splitlines()
+
+required_cm5 = [
+    "dtoverlay=dwc2,dr_mode=host",
+    "dtoverlay=vc4-kms-v3d",
+    "dtoverlay=vc4-kms-dpi-hyperpixel4sq",
+    "dtparam=pciex1",
+    "dtparam=pciex1_gen=3",
+    f"dtoverlay={dt_name}",
+]
+
+def comment_exact(lines, active, commented):
+    out = []
+    for line in lines:
+        if line.strip() == active:
+            out.append(commented)
+        else:
+            out.append(line)
+    return out
+
+lines = comment_exact(lines, "dtparam=i2c_arm=on", "#dtparam=i2c_arm=on")
+lines = comment_exact(lines, "dtparam=spi=on", "#dtparam=spi=on")
+
+# Remove project-specific entries globally first
+project_global_entries = {
+    "dtoverlay=dwc2,dr_mode=host",
+    "dtoverlay=vc4-kms-v3d",
+    "dtoverlay=vc4-kms-dpi-hyperpixel4sq",
+    "dtparam=pciex1",
+    "dtparam=pciex1_gen=3",
+    f"dtoverlay={dt_name}",
+}
+
+cleaned = []
+for line in lines:
+    if line.strip() in project_global_entries:
+        continue
+    cleaned.append(line)
+lines = cleaned
+
+# Find [cm5] block
+cm5_idx = None
+for i, line in enumerate(lines):
+    if line.strip() == "[cm5]":
+        cm5_idx = i
+        break
+
+if cm5_idx is None:
+    if lines and lines[-1].strip() != "":
+        lines.append("")
+    lines.append("[cm5]")
+    cm5_idx = len(lines) - 1
+
+end_idx = len(lines)
+for i in range(cm5_idx + 1, len(lines)):
+    s = lines[i].strip()
+    if s.startswith("[") and s.endswith("]"):
+        end_idx = i
+        break
+
+block = lines[cm5_idx + 1:end_idx]
+
+# Keep any unrelated lines already present in [cm5]
+filtered_block = [line for line in block if line.strip()]
+
+existing = {line.strip() for line in filtered_block}
+for entry in required_cm5:
+    if entry not in existing:
+        filtered_block.append(entry)
+
+lines = lines[:cm5_idx + 1] + filtered_block + lines[end_idx:]
+
+config.write_text("\n".join(lines) + "\n")
+PY
+
+  log "config.txt adjusted for HackberryPi Q20 on CM5"
 }
 
 refresh_module_deps() {
@@ -189,7 +292,7 @@ print_status() {
 
   log "Overlay dir: ${OVERLAY_DIR}"
   log "Overlay present: $(test -f "${OVERLAY_DIR}/${DT_NAME}.dtbo" && echo yes || echo no)"
-  log "Overlay enabled: $(grep -qx "dtoverlay=${DT_NAME}" "${CONFIG_TXT}" && echo yes || echo no)"
+  log "Overlay enabled in config.txt: $(grep -qx "dtoverlay=${DT_NAME}" "${CONFIG_TXT}" && echo yes || echo no)"
 }
 
 main() {
@@ -200,6 +303,7 @@ main() {
   sync_sources
   dkms_install
   install_overlay
+  configure_config_txt
   refresh_module_deps
   print_status
 

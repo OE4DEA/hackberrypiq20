@@ -8,7 +8,6 @@ PKG_VER="$(tr -d ' \t\r\n' < "${SCRIPT_DIR}/VERSION")"
 DT_NAME="hackberrypicm5"
 
 CONFIG_TXT="/boot/firmware/config.txt"
-OVERLAY_DIR="/boot/firmware/overlays"
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 
@@ -28,7 +27,6 @@ exec_cmd() {
   printf '%q ' "${cmd[@]}"
   printf '\n'
 
-  # Allow us to capture status even under `set -e`
   set +e
   "${cmd[@]}"
   local status=$?
@@ -43,38 +41,65 @@ exec_cmd() {
   return $status
 }
 
-must_exec() {
-  if ! exec_cmd "$@"; then
-    err "Aborting due to previous error"
-    exit 1
-  fi
-}
-
 section() {
   echo
   log "=== $* ==="
 }
 
-remove_overlay() {
-  section "Remove device-tree overlay"
+remove_overlay_config() {
+  section "Remove dtoverlay entry from config.txt"
 
   if [[ -f "${CONFIG_TXT}" ]]; then
     exec_cmd sed -i "\|^dtoverlay=${DT_NAME}$|d" "${CONFIG_TXT}" || true
+    log "dtoverlay entry removed from ${CONFIG_TXT}"
   else
-    warn "Missing ${CONFIG_TXT} (skipping dtoverlay removal)"
+    warn "Missing ${CONFIG_TXT} (skipping)"
   fi
-
-  exec_cmd rm -f "${OVERLAY_DIR}/${DT_NAME}.dtbo" || true
-
-  log "Overlay removed"
 }
 
-remove_dkms_all_versions() {
-  section "Remove DKMS module (all versions)"
+remove_overlay_files() {
+  section "Remove overlay files"
 
-  if dkms status -m "${PKG_NAME}" >/dev/null 2>&1; then
-    must_exec dkms remove -m "${PKG_NAME}" --all
-  else
+  local removed=0
+  local p
+
+  for p in \
+    "/boot/firmware/overlays/${DT_NAME}.dtbo" \
+    "/boot/firmware/current/overlays/${DT_NAME}.dtbo"
+  do
+    if [[ -e "${p}" ]]; then
+      exec_cmd rm -f "${p}" || true
+      removed=1
+    fi
+  done
+
+  if [[ "${removed}" -eq 0 ]]; then
+    log "No overlay file found for ${DT_NAME}"
+  fi
+}
+
+remove_dkms_versions() {
+  section "Remove DKMS module (all installed versions)"
+
+  local found=0
+  local line
+  local version
+
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    found=1
+
+    version="$(sed -n 's/^'"${PKG_NAME}"', \([^,]*\),.*$/\1/p' <<< "${line}")"
+
+    if [[ -n "${version}" ]]; then
+      log "Removing DKMS entry: ${PKG_NAME}/${version}"
+      exec_cmd dkms remove -m "${PKG_NAME}" -v "${version}" --all || true
+    else
+      warn "Could not parse DKMS version from: ${line}"
+    fi
+  done < <(dkms status 2>/dev/null | grep -E "^${PKG_NAME}," || true)
+
+  if [[ "${found}" -eq 0 ]]; then
     log "No DKMS entry found for ${PKG_NAME}"
   fi
 }
@@ -82,24 +107,23 @@ remove_dkms_all_versions() {
 remove_sources_all_versions() {
   section "Remove DKMS sources (/usr/src)"
 
-  # Remove any versioned source trees for this module.
-  # Use a glob but keep it safe if nothing matches.
   shopt -s nullglob
   local paths=(/usr/src/"${PKG_NAME}"-*)
   shopt -u nullglob
 
   if [[ ${#paths[@]} -eq 0 ]]; then
-    log "No /usr/src/${PKG_NAME}-* trees found (skipping)"
+    log "No /usr/src/${PKG_NAME}-* trees found"
     return 0
   fi
 
+  local p
   for p in "${paths[@]}"; do
     exec_cmd rm -rf "${p}" || true
   done
 }
 
 refresh_module_deps() {
-  section "Refresh module dependency map (depmod)"
+  section "Refresh module dependency map"
 
   if command -v depmod >/dev/null 2>&1; then
     exec_cmd depmod -a || true
@@ -116,15 +140,17 @@ print_status() {
     log "  ${line}"
   done || true
 
-  log "Overlay present: $(test -f "${OVERLAY_DIR}/${DT_NAME}.dtbo" && echo yes || echo no)"
+  log "Overlay in /boot/firmware/overlays: $(test -f "/boot/firmware/overlays/${DT_NAME}.dtbo" && echo yes || echo no)"
+  log "Overlay in /boot/firmware/current/overlays: $(test -f "/boot/firmware/current/overlays/${DT_NAME}.dtbo" && echo yes || echo no)"
   log "Overlay enabled: $(test -f "${CONFIG_TXT}" && grep -qx "dtoverlay=${DT_NAME}" "${CONFIG_TXT}" && echo yes || echo no)"
 }
 
 main() {
   need_root
 
-  remove_overlay
-  remove_dkms_all_versions
+  remove_overlay_config
+  remove_overlay_files
+  remove_dkms_versions
   remove_sources_all_versions
   refresh_module_deps
   print_status
@@ -134,4 +160,3 @@ main() {
 }
 
 main "$@"
-

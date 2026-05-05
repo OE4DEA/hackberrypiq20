@@ -8,6 +8,7 @@ PKG_VER="$(tr -d ' \t\r\n' < "${SCRIPT_DIR}/VERSION")"
 DT_NAME="hackberrypicm5"
 
 CONFIG_TXT="/boot/firmware/config.txt"
+OVERLAY_DIR="/boot/firmware/current/overlays"
 DKMS_SRC_DIR="/usr/src/${PKG_NAME}-${PKG_VER}"
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
@@ -54,25 +55,13 @@ section() {
   log "=== $* ==="
 }
 
-resolve_overlay_dir() {
-  if [[ -d /boot/firmware/overlays ]]; then
-    OVERLAY_DIR="/boot/firmware/overlays"
-  elif [[ -d /boot/firmware/current/overlays ]]; then
-    OVERLAY_DIR="/boot/firmware/current/overlays"
-    warn "Using fallback overlay dir: ${OVERLAY_DIR}"
-  else
-    die "Missing overlay directory: neither /boot/firmware/overlays nor /boot/firmware/current/overlays exists"
-  fi
-}
-
 check_prereqs() {
   [[ -f "${SCRIPT_DIR}/dkms.conf" ]] || die "Missing dkms.conf"
   [[ -f "${SCRIPT_DIR}/Makefile"  ]] || die "Missing Makefile"
   [[ -f "${SCRIPT_DIR}/${DT_NAME}.dts" ]] || die "Missing ${DT_NAME}.dts"
   [[ -f "${SCRIPT_DIR}/VERSION" ]] || die "Missing VERSION"
   [[ -f "${CONFIG_TXT}" ]] || die "Missing ${CONFIG_TXT}"
-
-  resolve_overlay_dir
+  [[ -d "${OVERLAY_DIR}" ]] || die "Missing ${OVERLAY_DIR}"
 
   for cmd in dkms make dtc rsync install sed grep uname depmod python3; do
     command -v "${cmd}" >/dev/null 2>&1 || die "Missing dependency: ${cmd}"
@@ -185,6 +174,9 @@ install_overlay() {
 
   rm -f "${dtbo_tmp}"
 
+  [[ -f "${OVERLAY_DIR}/${DT_NAME}.dtbo" ]] || die \
+    "Overlay install failed: ${OVERLAY_DIR}/${DT_NAME}.dtbo not found after install"
+
   log "Overlay installed to ${OVERLAY_DIR}/${DT_NAME}.dtbo"
 }
 
@@ -209,6 +201,8 @@ required_cm5 = [
     f"dtoverlay={dt_name}",
 ]
 
+project_entries = set(required_cm5)
+
 def comment_exact(lines, active, commented):
     out = []
     for line in lines:
@@ -221,19 +215,10 @@ def comment_exact(lines, active, commented):
 lines = comment_exact(lines, "dtparam=i2c_arm=on", "#dtparam=i2c_arm=on")
 lines = comment_exact(lines, "dtparam=spi=on", "#dtparam=spi=on")
 
-# Remove project-specific entries globally first
-project_global_entries = {
-    "dtoverlay=dwc2,dr_mode=host",
-    "dtoverlay=vc4-kms-v3d",
-    "dtoverlay=vc4-kms-dpi-hyperpixel4sq",
-    "dtparam=pciex1",
-    "dtparam=pciex1_gen=3",
-    f"dtoverlay={dt_name}",
-}
-
+# Remove project-specific entries globally first so they only exist in [cm5]
 cleaned = []
 for line in lines:
-    if line.strip() in project_global_entries:
+    if line.strip() in project_entries:
         continue
     cleaned.append(line)
 lines = cleaned
@@ -260,7 +245,7 @@ for i in range(cm5_idx + 1, len(lines)):
 
 block = lines[cm5_idx + 1:end_idx]
 
-# Keep any unrelated lines already present in [cm5]
+# Keep unrelated [cm5] lines, remove empties
 filtered_block = [line for line in block if line.strip()]
 
 existing = {line.strip() for line in filtered_block}

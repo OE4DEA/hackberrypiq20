@@ -7,8 +7,8 @@ PKG_NAME="hackberrypi-max17048"
 PKG_VER="$(tr -d ' \t\r\n' < "${SCRIPT_DIR}/VERSION")"
 DT_NAME="hackberrypicm5"
 
-CONFIG_TXT="/boot/firmware/config.txt"
-OVERLAY_DIR="/boot/firmware/current/overlays"
+BOOT_BASE="/boot/firmware"
+CONFIG_TXT="${BOOT_BASE}/config.txt"
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 
@@ -47,15 +47,12 @@ section() {
   log "=== $* ==="
 }
 
-remove_config_txt_setup() {
-  section "Remove project-specific config.txt setup"
+cleanup_one_config() {
+  local cfg="$1"
 
-  if [[ ! -f "${CONFIG_TXT}" ]]; then
-    warn "Missing ${CONFIG_TXT} (skipping)"
-    return 0
-  fi
+  [[ -f "${cfg}" ]] || return 0
 
-  python3 - "${CONFIG_TXT}" "${DT_NAME}" <<'PY'
+  python3 - "${cfg}" "${DT_NAME}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -119,6 +116,14 @@ for line in lines:
 
 config.write_text("\n".join(compacted).rstrip() + "\n")
 PY
+}
+
+remove_config_txt_sets() {
+  section "Remove project-specific config.txt setup"
+
+  cleanup_one_config "${BOOT_BASE}/config.txt"
+  cleanup_one_config "${BOOT_BASE}/current/config.txt"
+  cleanup_one_config "${BOOT_BASE}/new/config.txt"
 
   log "Project-specific config.txt changes removed"
 }
@@ -129,7 +134,10 @@ remove_overlay_files() {
   local removed=0
   local p
 
-  for p in "${OVERLAY_DIR}/${DT_NAME}.dtbo"
+  for p in \
+    "${BOOT_BASE}/current/overlays/${DT_NAME}.dtbo" \
+    "${BOOT_BASE}/new/overlays/${DT_NAME}.dtbo" \
+    "${BOOT_BASE}/old/overlays/${DT_NAME}.dtbo"
   do
     if [[ -e "${p}" ]]; then
       exec_cmd rm -f "${p}" || true
@@ -221,14 +229,16 @@ print_status() {
     log "  ${line}"
   done || true
 
-  log "Overlay in ${OVERLAY_DIR}: $(test -f "${OVERLAY_DIR}/${DT_NAME}.dtbo" && echo yes || echo no)"
-  log "Overlay enabled in config.txt: $(test -f "${CONFIG_TXT}" && grep -qx "dtoverlay=${DT_NAME}" "${CONFIG_TXT}" && echo yes || echo no)"
+  log "Overlay in current: $(test -f "${BOOT_BASE}/current/overlays/${DT_NAME}.dtbo" && echo yes || echo no)"
+  log "Overlay in new: $(test -f "${BOOT_BASE}/new/overlays/${DT_NAME}.dtbo" && echo yes || echo no)"
+  log "Overlay in old: $(test -f "${BOOT_BASE}/old/overlays/${DT_NAME}.dtbo" && echo yes || echo no)"
+  log "Overlay enabled in ${CONFIG_TXT}: $(test -f "${CONFIG_TXT}" && grep -qx "dtoverlay=${DT_NAME}" "${CONFIG_TXT}" && echo yes || echo no)"
 }
 
 main() {
   need_root
 
-  remove_config_txt_setup
+  remove_config_txt_sets
   remove_overlay_files
   remove_dkms_versions
   remove_sources_all_versions

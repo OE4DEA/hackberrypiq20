@@ -9,6 +9,9 @@ DT_NAME="hackberrypicm5"
 
 BOOT_BASE="/boot/firmware"
 CONFIG_TXT="${BOOT_BASE}/config.txt"
+CURRENT_OVERLAY_DIR="${BOOT_BASE}/current/overlays"
+NEW_OVERLAY_DIR="${BOOT_BASE}/new/overlays"
+OLD_OVERLAY_DIR="${BOOT_BASE}/old/overlays"
 DKMS_SRC_DIR="/usr/src/${PKG_NAME}-${PKG_VER}"
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
@@ -61,7 +64,7 @@ check_prereqs() {
   [[ -f "${SCRIPT_DIR}/${DT_NAME}.dts" ]] || die "Missing ${DT_NAME}.dts"
   [[ -f "${SCRIPT_DIR}/VERSION" ]] || die "Missing VERSION"
   [[ -f "${CONFIG_TXT}" ]] || die "Missing ${CONFIG_TXT}"
-  [[ -d "${BOOT_BASE}/current/overlays" ]] || die "Missing ${BOOT_BASE}/current/overlays"
+  [[ -d "${CURRENT_OVERLAY_DIR}" ]] || die "Missing ${CURRENT_OVERLAY_DIR}"
 
   for cmd in dkms make dtc rsync install sed grep uname depmod python3; do
     command -v "${cmd}" >/dev/null 2>&1 || die "Missing dependency: ${cmd}"
@@ -159,7 +162,7 @@ dkms_install() {
 }
 
 install_overlay_sets() {
-  section "Install device-tree overlay into boot asset sets"
+  section "Install device-tree overlay"
 
   local dtbo_tmp
   dtbo_tmp="$(mktemp "/tmp/${DT_NAME}.XXXXXX.dtbo")"
@@ -168,27 +171,26 @@ install_overlay_sets() {
     -o "${dtbo_tmp}" \
     "${SCRIPT_DIR}/${DT_NAME}.dts"
 
-  # Active boot asset set
   must_exec install -m 0644 \
     "${dtbo_tmp}" \
-    "${BOOT_BASE}/current/overlays/${DT_NAME}.dtbo"
+    "${CURRENT_OVERLAY_DIR}/${DT_NAME}.dtbo"
 
-  [[ -f "${BOOT_BASE}/current/overlays/${DT_NAME}.dtbo" ]] || die \
-    "Overlay install failed for ${BOOT_BASE}/current/overlays/${DT_NAME}.dtbo"
+  [[ -f "${CURRENT_OVERLAY_DIR}/${DT_NAME}.dtbo" ]] || die \
+    "Overlay install failed for ${CURRENT_OVERLAY_DIR}/${DT_NAME}.dtbo"
 
-  # Pending next boot asset set, if present
-  if [[ -d "${BOOT_BASE}/new/overlays" ]]; then
+  if [[ -d "${NEW_OVERLAY_DIR}" ]]; then
     must_exec install -m 0644 \
       "${dtbo_tmp}" \
-      "${BOOT_BASE}/new/overlays/${DT_NAME}.dtbo"
+      "${NEW_OVERLAY_DIR}/${DT_NAME}.dtbo"
 
-    [[ -f "${BOOT_BASE}/new/overlays/${DT_NAME}.dtbo" ]] || die \
-      "Overlay install failed for ${BOOT_BASE}/new/overlays/${DT_NAME}.dtbo"
+    [[ -f "${NEW_OVERLAY_DIR}/${DT_NAME}.dtbo" ]] || die \
+      "Overlay install failed for ${NEW_OVERLAY_DIR}/${DT_NAME}.dtbo"
+  else
+    log "No pending boot asset set found (${NEW_OVERLAY_DIR} absent)"
   fi
 
-  # Remove stale old copy to avoid confusion
-  if [[ -f "${BOOT_BASE}/old/overlays/${DT_NAME}.dtbo" ]]; then
-    exec_cmd rm -f "${BOOT_BASE}/old/overlays/${DT_NAME}.dtbo" || true
+  if [[ -f "${OLD_OVERLAY_DIR}/${DT_NAME}.dtbo" ]]; then
+    exec_cmd rm -f "${OLD_OVERLAY_DIR}/${DT_NAME}.dtbo" || true
   fi
 
   rm -f "${dtbo_tmp}"
@@ -213,9 +215,6 @@ lines = config.read_text().splitlines()
 required_cm5 = [
     "dtoverlay=dwc2,dr_mode=host",
     "dtoverlay=vc4-kms-v3d",
-    "dtoverlay=vc4-kms-dpi-hyperpixel4sq",
-    "dtparam=pciex1",
-    "dtparam=pciex1_gen=3",
     f"dtoverlay={dt_name}",
 ]
 
@@ -233,7 +232,6 @@ def comment_exact(lines, active, commented):
 lines = comment_exact(lines, "dtparam=i2c_arm=on", "#dtparam=i2c_arm=on")
 lines = comment_exact(lines, "dtparam=spi=on", "#dtparam=spi=on")
 
-# Remove project-specific entries globally first so they only exist in [cm5]
 cleaned = []
 for line in lines:
     if line.strip() in project_entries:
@@ -241,7 +239,6 @@ for line in lines:
     cleaned.append(line)
 lines = cleaned
 
-# Find [cm5]
 cm5_idx = None
 for i, line in enumerate(lines):
     if line.strip() == "[cm5]":
@@ -275,16 +272,12 @@ PY
 }
 
 configure_config_sets() {
-  section "Adjust config.txt in boot asset sets"
+  section "Adjust config.txt"
 
   adjust_one_config "${BOOT_BASE}/config.txt"
 
   if [[ -f "${BOOT_BASE}/new/config.txt" ]]; then
     adjust_one_config "${BOOT_BASE}/new/config.txt"
-  fi
-
-  if [[ -f "${BOOT_BASE}/current/config.txt" ]]; then
-    adjust_one_config "${BOOT_BASE}/current/config.txt"
   fi
 
   log "config.txt adjusted for HackberryPi Q20 on CM5"
@@ -304,9 +297,9 @@ print_status() {
     log "  ${line}"
   done || true
 
-  log "Overlay present in current: $(test -f "${BOOT_BASE}/current/overlays/${DT_NAME}.dtbo" && echo yes || echo no)"
-  log "Overlay present in new: $(test -f "${BOOT_BASE}/new/overlays/${DT_NAME}.dtbo" && echo yes || echo no)"
-  log "Overlay enabled in ${BOOT_BASE}/config.txt: $(grep -qx "dtoverlay=${DT_NAME}" "${BOOT_BASE}/config.txt" && echo yes || echo no)"
+  log "Overlay present in current: $(test -f "${CURRENT_OVERLAY_DIR}/${DT_NAME}.dtbo" && echo yes || echo no)"
+  log "Overlay present in new: $(test -f "${NEW_OVERLAY_DIR}/${DT_NAME}.dtbo" && echo yes || echo no)"
+  log "Overlay enabled in ${CONFIG_TXT}: $(grep -qx "dtoverlay=${DT_NAME}" "${CONFIG_TXT}" && echo yes || echo no)"
 }
 
 main() {

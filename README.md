@@ -48,7 +48,7 @@ ls /lib/modules/$(uname -r)/build
 ## Install
 
 ```bash
-git clone https://github.com/CNflysky/hackberrypiq20.git
+git clone https://github.com/OE4DEA/hackberrypiq20.git
 cd hackberrypiq20
 chmod +x install.sh uninstall.sh
 sudo ./install.sh
